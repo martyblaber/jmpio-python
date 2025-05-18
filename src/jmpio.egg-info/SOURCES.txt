@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+setup.py
+src/jmpio.egg-info/PKG-INFO
+src/jmpio.egg-info/SOURCES.txt
+src/jmpio.egg-info/dependency_links.txt
+src/jmpio.egg-info/requires.txt
+src/jmpio.egg-info/top_level.txt
+tests/test_reader.py
+tests/test_utils.py
+tests/test_writer.py
