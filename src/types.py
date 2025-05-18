@@ -4,16 +4,15 @@ Data types and structures for JMP files
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, Dict, Any, Tuple
 import numpy as np
 
 
 @dataclass
 class Column:
     """Column information for a JMP file"""
-    names: List[str]
-    widths: List[int]
-    offsets: List[int]
+    names: list[str]
+    widths: list[int]
+    offsets: list[int]
 
 
 @dataclass
@@ -31,7 +30,7 @@ class JMPInfo:
 class RowState:
     """Row state information (marker and color)"""
     marker: str
-    color: Tuple[float, float, float]  # RGB values (0-1)
+    color: tuple[float, float, float]  # RGB values (0-1)
 
 
 # Type mappings from JMP to Python

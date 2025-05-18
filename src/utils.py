@@ -3,11 +3,10 @@ Utility functions for reading and writing JMP files
 """
 
 import struct
-import re
 import numpy as np
 import pandas as pd
-from datetime import datetime, date, time, timedelta
-from typing import List, Optional, Union, Any, TypeVar, BinaryIO, Tuple, cast
+from datetime import datetime
+from typing import TypeVar, BinaryIO
 import mmap
 from .constants import JMP_STARTDATE, MAGIC_JMP
 
@@ -191,7 +190,7 @@ def sentinel_to_missing(data: np.ndarray) -> pd.Series:
     return pd.Series(data)
 
 
-def hex_to_rgb(hex_color: str) -> Tuple[float, float, float]:
+def hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     """
     Convert hex color code to RGB tuple with values in [0, 1]
     
@@ -202,7 +201,7 @@ def hex_to_rgb(hex_color: str) -> Tuple[float, float, float]:
         
     Returns:
     --------
-    Tuple[float, float, float]
+    tuple[float, float, float]
         RGB tuple with values in range [0, 1]
     """
     hex_color = hex_color.lstrip('#')

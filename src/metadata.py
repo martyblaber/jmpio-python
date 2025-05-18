@@ -4,9 +4,9 @@ Functions for reading JMP file metadata
 
 import re
 import struct
-import io
-from typing import BinaryIO, Tuple, List, Dict, Any, Optional
+from typing import BinaryIO
 import numpy as np
+import pandas as pd
 
 from .constants import OFFSET_NROWS
 from .types import JMPInfo, Column
@@ -88,7 +88,7 @@ def read_metadata(file: BinaryIO) -> JMPInfo:
     )
 
 
-def column_info(file: BinaryIO, ncols: int) -> Tuple[List[str], List[int]]:
+def column_info(file: BinaryIO, ncols: int) -> tuple[list[str], list[int]]:
     """
     Extract column names and data offsets from a JMP file
     
@@ -101,7 +101,7 @@ def column_info(file: BinaryIO, ncols: int) -> Tuple[List[str], List[int]]:
         
     Returns:
     --------
-    Tuple[List[str], List[int]]
+    tuple[list[str], list[int]]
         A tuple containing column names and column offsets
     """
     while True:
@@ -135,7 +135,7 @@ def column_info(file: BinaryIO, ncols: int) -> Tuple[List[str], List[int]]:
     return colnames, coloffsets
 
 
-def seek_to_column_data_offsets(file: BinaryIO, ncols: int) -> Tuple[int, int]:
+def seek_to_column_data_offsets(file: BinaryIO, ncols: int) -> tuple[int, int]:
     """
     Find the location of column data offsets in the file
     
@@ -148,7 +148,7 @@ def seek_to_column_data_offsets(file: BinaryIO, ncols: int) -> Tuple[int, int]:
         
     Returns:
     --------
-    Tuple[int, int]
+    tuple[int, int]
         Number of visible columns and number of hidden columns
     """
     # Save current position

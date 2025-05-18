@@ -5,17 +5,16 @@ Functions for writing JMP files
 import os
 import struct
 import gzip
-import io
 import numpy as np
 import pandas as pd
 from datetime import datetime, date, time, timedelta
-from typing import BinaryIO, Dict, List, Any, Optional, Union, Tuple
+from typing import BinaryIO
 
 from .constants import (
     MAGIC_JMP, JMP_STARTDATE, GZIP_SECTION_START, 
     OFFSET_NROWS, ROWSTATE_MARKERS, ROWSTATE_COLORS
 )
-from .types import JMPInfo, Column, RowState
+from .types import RowState
 
 
 def write_jmp(df: pd.DataFrame, 
@@ -133,7 +132,7 @@ def write_file_header(file: BinaryIO, df: pd.DataFrame, version: str) -> None:
     file.write(build_string.encode('utf-8'))
 
 
-def write_column_metadata(file: BinaryIO, df: pd.DataFrame) -> List[int]:
+def write_column_metadata(file: BinaryIO, df: pd.DataFrame) -> list[int]:
     """
     Write metadata about columns
     
@@ -146,7 +145,7 @@ def write_column_metadata(file: BinaryIO, df: pd.DataFrame) -> List[int]:
         
     Returns:
     --------
-    List[int]
+    list[int]
         List of file offsets for each column's data
     """
     # Write column metadata section marker

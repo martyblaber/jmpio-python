@@ -3,19 +3,17 @@ Main function for reading JMP files
 """
 
 import os
-from typing import BinaryIO, List, Optional, Union, Dict, Any, Pattern
+from typing import Optional, Union, Pattern
 import pandas as pd
-import re
 
-from .types import JMPInfo
 from .utils import check_magic
 from .metadata import read_metadata
 from .column import read_column_data
 
 
 def read_jmp(filename: str, 
-             select: Optional[List[Union[int, str, Pattern]]] = None, 
-             drop: Optional[List[Union[int, str, Pattern]]] = None) -> pd.DataFrame:
+             select: Optional[list[Union[int, str, Pattern]]] = None, 
+             drop: Optional[list[Union[int, str, Pattern]]] = None) -> pd.DataFrame:
     """
     Read a JMP file and return a pandas DataFrame
     
@@ -23,9 +21,9 @@ def read_jmp(filename: str,
     -----------
     filename : str
         Path to the JMP file
-    select : Optional[List[Union[int, str, Pattern]]], default=None
+    select : Optional[list[Union[int, str, Pattern]]], default=None
         List of columns to include. Can contain indices, strings, or regex patterns.
-    drop : Optional[List[Union[int, str, Pattern]]], default=None
+    drop : Optional[list[Union[int, str, Pattern]]], default=None
         List of columns to exclude. Can contain indices, strings, or regex patterns.
         
     Returns:
