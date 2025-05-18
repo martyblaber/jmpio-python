@@ -119,3 +119,5 @@ MIT
 ## Acknowledgments
 
 This package is a Python port of the Julia package [JMPReader.jl](https://github.com/jaakkor2/JMPReader.jl).
+JMP is a registered trademark of SAS Institute Inc. This project is not affiliated with, sponsored by, or endorsed by SAS Institute Inc.
+
