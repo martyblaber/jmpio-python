@@ -5,319 +5,267 @@ Functions for reading column data from JMP files
 import struct
 import gzip
 import io
-from typing import BinaryIO, List, Dict, Any, Union, Optional, Tuple, cast
 import numpy as np
 import pandas as pd
-from datetime import datetime, date, time, timedelta
+from typing import BinaryIO, Any
 
 from .constants import GZIP_SECTION_START, JMP_STARTDATE, ROWSTATE_MARKERS, ROWSTATE_COLORS
 from .types import JMPInfo, RowState
-from .utils import read_string, read_reals, to_datetime, sentinel_to_missing, bit_cat
+from .utils import read_string, to_datetime, sentinel_to_missing, bit_cat, hex_to_rgb
 
 
 def read_column_data(file: BinaryIO, info: JMPInfo, column_idx: int) -> Any:
-    """
-    Read data from a specific column in a JMP file
-    
-    Parameters:
-    -----------
-    file : BinaryIO
-        Open file handle to a JMP file
-    info : JMPInfo
-        JMP file metadata
-    column_idx : int
-        Index of the column to read
-        
-    Returns:
-    --------
-    Any
-        Column data as a numpy array or pandas Series
-    """
     if not (0 <= column_idx < info.ncols):
         raise ValueError(f"Column index {column_idx} is out of bounds (0-{info.ncols-1})")
-    
-    # Seek to the column offset
+
     file.seek(info.column.offsets[column_idx])
-    
-    # Read column name
     column_name = read_string(file, 2)
-    column_name_len = len(column_name.encode('utf-8'))  # Get actual bytes used
-    
-    # Read column data type markers
-    dt = struct.unpack('BBBBBB', file.read(6))
+
+    dt_bytes = file.read(6)
+    if len(dt_bytes) < 6:
+        raise EOFError(f"Could not read 6 dt_bytes for column {column_name}")
+    dt = struct.unpack('BBBBBB', dt_bytes)
     dt1, dt2, dt3, dt4, dt5, dt6 = dt
-    
-    start_pos = file.tell()
-    
-    # Handle compressed data
+
+    start_pos_after_dt = file.tell()
+
     is_compressed = dt1 in [0x09, 0x0a]
-    
-    if is_compressed:
-        # Find the start of the gzip section
-        while True:
-            bytes_read = file.read(4)
-            if not bytes_read:
-                raise EOFError(f"End of file reached before finding GZIP_SECTION_START in column {column_name}")
-            if bytes_read == GZIP_SECTION_START:
-                break
-        
-        # Read compressed and uncompressed sizes
-        gzip_len = struct.unpack('Q', file.read(8))[0]  # UInt64
-        gunzip_len = struct.unpack('Q', file.read(8))[0]  # UInt64
-        
-        # Read compressed data
-        compressed_data = file.read(gzip_len)
-        
-        # Decompress
-        try:
-            decompressed_data = gzip.decompress(compressed_data)
-            buffer = io.BytesIO(decompressed_data)
-        except Exception as e:
-            raise ValueError(f"Failed to decompress data for column '{column_name}': {str(e)}")
-    else:
-        # For uncompressed data, figure out column end
+    data_payload_source: io.BytesIO | None = None
+    col_end = -1
+
+    if not is_compressed:
         if column_idx == info.ncols - 1:
-            # Last column, read to end of file
-            file.seek(0, 2)  # Seek to end
+            current_file_pos_for_col_end = file.tell()
+            file.seek(0, 2)
             col_end = file.tell()
+            file.seek(current_file_pos_for_col_end)
         else:
             col_end = info.column.offsets[column_idx + 1]
+
+    if is_compressed:
+        original_file_pos = file.tell()
+        header_search_limit = 2048
+        temp_header = file.read(header_search_limit)
+        gzip_section_offset = temp_header.find(GZIP_SECTION_START)
+
+        if gzip_section_offset == -1:
+            raise EOFError(f"GZIP_SECTION_START not found within {header_search_limit} bytes for compressed column {column_name}")
+
+        file.seek(original_file_pos + gzip_section_offset)
+        gs_check = file.read(len(GZIP_SECTION_START))
+        if gs_check != GZIP_SECTION_START:
+            raise ValueError("GZIP_SECTION_START check failed.")
+
+        gzip_len = struct.unpack('<Q', file.read(8))[0]
+        gunzip_len = struct.unpack('<Q', file.read(8))[0]
+        compressed_data_bytes = file.read(gzip_len)
         
-        # Read all column data
-        column_size = col_end - info.column.offsets[column_idx]
-        file.seek(info.column.offsets[column_idx])
-        column_data = file.read(column_size)
-        
-        # Create in-memory buffer
-        buffer = io.BytesIO(column_data)
-        
-        # Skip the header we've already read (column name + length bytes + 6 dtype bytes)
-        buffer.seek(2 + column_name_len + 6)
+        try:
+            decompressed_bytes = gzip.decompress(compressed_data_bytes)
+            data_payload_source = io.BytesIO(decompressed_bytes)
+        except Exception as e:
+            raise ValueError(f"Failed to decompress data for column '{column_name}': {str(e)}")
     
     try:
-        # Numeric data types (float, integers, dates, times)
-        if dt1 in [0x01, 0x0a]:
-            # Determine data type
-            if dt6 == 0x01:
-                dtype = np.int8
-            elif dt6 == 0x02:
-                dtype = np.int16
-            elif dt6 == 0x04:
-                dtype = np.int32
-            else:
-                dtype = np.float64
+        if dt1 in [0x01, 0x0a]: # Numeric types
+            if not is_compressed:
+                file.seek(start_pos_after_dt)
+                uncompressed_data_block_bytes = file.read(col_end - start_pos_after_dt)
+                data_payload_source = io.BytesIO(uncompressed_data_block_bytes)
             
-            # For compressed data, data is at the end of the decompressed buffer
-            if is_compressed:
-                buffer.seek(-dtype().itemsize * info.nrows, 2)  # Seek from end
-                
-            raw_data = buffer.read(dtype().itemsize * info.nrows)
-            data_array = np.frombuffer(raw_data, dtype=dtype)
+            if data_payload_source is None:
+                raise ValueError("data_payload_source not initialized for numeric type")
+
+            dtype_map = {0x01: np.int8, 0x02: np.int16, 0x04: np.int32}
+            selected_dtype = dtype_map.get(dt6, np.float64)
+            item_size = np.dtype(selected_dtype).itemsize
+            data_size = item_size * info.nrows
             
-            # Convert sentinel values to missing
-            data_array = sentinel_to_missing(data_array)
+            data_payload_source.seek(-data_size, 2)
+            raw_data = data_payload_source.read(data_size)
+            if len(raw_data) < data_size:
+                 raise EOFError(f"Not enough data for numeric column {column_name}. Expected {data_size}, got {len(raw_data)}")
+            data_array = np.frombuffer(raw_data, dtype=selected_dtype)
+            series_data = sentinel_to_missing(np.copy(data_array))
+
+            if ((dt4 == dt5 and dt4 in [0x00, 0x03, 0x42, 0x43, 0x44, 0x59, 0x60, 0x63]) or \
+                dt5 in [0x5e, 0x63]):
+                return series_data
+            if dt4 == dt5 and dt4 in [0x5f]: 
+                return series_data # Currency
+            if dt4 == dt5 and dt4 in [0x54, 0x55, 0x56]: 
+                return series_data # Longitude
+            if dt4 == dt5 and dt4 in [0x51, 0x52, 0x53]: 
+                return series_data # Latitude
             
-            # Check specific type markers for different numeric types
+            datetime_array = to_datetime(data_array.astype(np.float64))
             
-            # Regular numeric values (Float64 or byte integers)
-            if ((dt4 == dt5 and dt4 in [
-                    0x00, 0x03, 0x42, 0x43, 0x44, 0x59, 0x60, 0x63
-                ]) or
-                dt5 in [0x5e, 0x63]):  # fixed decimal, dt3=width, dt4=decimal places
-                return pd.Series(data_array)
-            
-            # Currency
-            if dt4 == dt5 and dt4 in [0x5f]:
-                return pd.Series(data_array)
-            
-            # Longitude
-            if dt4 == dt5 and dt4 in [0x54, 0x55, 0x56]:
-                return pd.Series(data_array)
-            
-            # Latitude
-            if dt4 == dt5 and dt4 in [0x51, 0x52, 0x53]:
-                return pd.Series(data_array)
-            
-            # For date/time values, convert to appropriate datetime format
-            # First convert to datetime64
-            datetime_array = to_datetime(data_array)
-            
-            # Date
-            if ((dt4 == dt5 and dt4 in [
-                    0x65, 0x66, 0x67, 0x6e, 0x6f, 0x70, 0x71, 0x72, 0x75, 0x76, 0x7a,
-                    0x7f, 0x88, 0x8b,
-                ]) or
-                [dt4, dt5] in [[0x67, 0x65], [0x6f, 0x65], [0x72, 0x65], [0x72, 0x6f], 
-                            [0x72, 0x7f], [0x72, 0x80], [0x7f, 0x72], [0x88, 0x65], [0x88, 0x7a]]):
-                return pd.Series(datetime_array.astype('datetime64[D]'))
-            
-            # DateTime
-            if (dt5 in [0x69, 0x6a, 0x73, 0x74, 0x77, 0x78, 0x7e, 0x81] and dt4 in [
-                    0x69, 0x6a, 0x6c, 0x6d, 0x73, 0x74, 0x77, 0x78, 0x79, 0x7b, 0x7c,
-                    0x7d, 0x7e, 0x80, 0x81, 0x82, 0x86, 0x87, 0x89, 0x8a,
-                ] or
-                dt4 == dt5 in [0x79, 0x7d] or
-                [dt4, dt5] in [[0x77, 0x80], [0x77, 0x7f], [0x89, 0x65]]):
-                return pd.Series(datetime_array)
-            
-            # Time
-            if dt4 == dt5 in [0x82]:
-                # Extract just the time portion of the datetime
-                return pd.Series(pd.to_datetime(datetime_array).dt.time)
-            
-            # Duration
-            if ((dt4 == dt5 and dt4 in [
-                    0x0c, 0x6b, 0x6c, 0x6d, 0x83, 0x84, 0x85
-                ]) or
-                [dt4, dt5] in [[0x84, 0x79]]):
-                # Calculate duration in milliseconds from JMP_STARTDATE
+            if ((dt4 == dt5 and dt4 in [0x65, 0x66, 0x67, 0x6e, 0x6f, 0x70, 0x71, 0x72, 0x75, 0x76, 0x7a, 0x7f, 0x88, 0x8b]) or \
+                any(np.array_equal([dt4, dt5], p) for p in [[0x67, 0x65], [0x6f, 0x65], [0x72, 0x65], [0x72, 0x6f], [0x72, 0x7f], [0x72, 0x80], [0x7f, 0x72], [0x88, 0x65], [0x88, 0x7a]])):
+                return pd.Series(datetime_array.astype('datetime64[D]')) # Date
+            if (dt5 in [0x69, 0x6a, 0x73, 0x74, 0x77, 0x78, 0x7e, 0x81] and dt4 in [0x69, 0x6a, 0x6c, 0x6d, 0x73, 0x74, 0x77, 0x78, 0x79, 0x7b, 0x7c, 0x7d, 0x7e, 0x80, 0x81, 0x82, 0x86, 0x87, 0x89, 0x8a]) or \
+                (dt4 == dt5 and dt4 in [0x79, 0x7d]) or \
+                any(np.array_equal([dt4, dt5], p) for p in [[0x77, 0x80], [0x77, 0x7f], [0x89, 0x65]]):
+                return pd.Series(datetime_array) # DateTime
+            if dt4 == dt5 and dt4 in [0x82]: # Time
+                return pd.Series(pd.to_datetime(datetime_array).time)
+            if ((dt4 == dt5 and dt4 in [0x0c, 0x6b, 0x6c, 0x6d, 0x83, 0x84, 0x85]) or \
+                any(np.array_equal([dt4, dt5], p) for p in [[0x84, 0x79]])): # Duration
                 epoch_start = np.datetime64(JMP_STARTDATE)
-                delta_ms = (datetime_array - epoch_start) / np.timedelta64(1, 'ms')
-                return pd.Series(pd.to_timedelta(delta_ms, unit='ms'))
-        
-        # Alternative byte integer encoding
-        if dt1 in [0xff, 0xfe, 0xfc]:
-            if dt5 == 0x01:
-                dtype = np.int8
-            elif dt5 == 0x02:
-                dtype = np.int16
-            elif dt5 == 0x04:
-                dtype = np.int32
-            else:
-                dtype = np.float64
+                valid_dates = pd.to_datetime(datetime_array, errors='coerce')
+                delta = valid_dates - epoch_start
+                return pd.Series(delta)
+
+        elif dt1 in [0xff, 0xfe, 0xfc]: # Alternative byte integer
+            if not is_compressed:
+                file.seek(start_pos_after_dt)
+                uncompressed_data_block_bytes = file.read(col_end - start_pos_after_dt)
+                data_payload_source = io.BytesIO(uncompressed_data_block_bytes)
+
+            if data_payload_source is None:
+                raise ValueError("data_payload_source not initialized for alt byte int type")
+
+            dtype_map = {0x01: np.int8, 0x02: np.int16, 0x04: np.int32}
+            selected_dtype = dtype_map.get(dt5, np.float64)
+            item_size = np.dtype(selected_dtype).itemsize
+            data_size = item_size * info.nrows
             
-            # For compressed data or at the end of the file
-            if is_compressed:
-                buffer.seek(-dtype().itemsize * info.nrows, 2)  # From end
+            data_payload_source.seek(-data_size, 2)
+            raw_data = data_payload_source.read(data_size)
+            if len(raw_data) < data_size:
+                 raise EOFError(f"Not enough data for alt int column {column_name}. Expected {data_size}, got {len(raw_data)}")
+            data_array = np.frombuffer(raw_data, dtype=selected_dtype)
+            return sentinel_to_missing(np.copy(data_array))
+
+        elif dt1 == 0x09 and dt2 == 0x03: # Row states
+            if not is_compressed or data_payload_source is None:
+                 raise ValueError("Row states expect compressed data_payload_source")
             
-            raw_data = buffer.read(dtype().itemsize * info.nrows)
-            data_array = np.frombuffer(raw_data, dtype=dtype)
-            
-            # Convert sentinel values to missing
-            data_array = sentinel_to_missing(data_array)
-            return pd.Series(data_array)
-        
-        # Row states (markers and colors)
-        if dt1 == 0x09 and dt2 == 0x03:
             width = dt5
             row_states = []
+            data_payload_source.seek(0)
             
-            # For compressed data, the row states should be at the end
-            if is_compressed:
-                buffer.seek(-width * info.nrows, 2)  # From end
-            
-            # Read each row state
-            for row in range(info.nrows):
-                row_data = buffer.read(width)
-                if len(row_data) < width:
-                    raise ValueError(f"Not enough data for row states in column {column_name}")
+            for _ in range(info.nrows):
+                row_data_bytes = data_payload_source.read(width)
+                if len(row_data_bytes) < width:
+                    raise EOFError(f"Not enough data for row state in {column_name}")
                 
-                marker_idx = bit_cat(row_data[7], row_data[6])
+                marker_idx = bit_cat(row_data_bytes[6], row_data_bytes[7])
                 marker = ROWSTATE_MARKERS[marker_idx] if marker_idx < len(ROWSTATE_MARKERS) else chr(marker_idx)
                 
-                # Extract color
-                if row_data[4] == 0xff:
-                    r, g, b = row_data[3] / 255, row_data[2] / 255, row_data[1] / 255
+                r, g, b = 0.0, 0.0, 0.0
+                if row_data_bytes[4] == 0xff:
+                    r = row_data_bytes[3] / 255.0
+                    g = row_data_bytes[2] / 255.0
+                    b = row_data_bytes[1] / 255.0
                 else:
-                    # Get color from predefined colors
-                    color_idx = row_data[1]
+                    color_idx = row_data_bytes[1]
                     if 0 <= color_idx < len(ROWSTATE_COLORS):
-                        color_hex = ROWSTATE_COLORS[color_idx]
-                        r = int(color_hex[1:3], 16) / 255
-                        g = int(color_hex[3:5], 16) / 255
-                        b = int(color_hex[5:7], 16) / 255
-                    else:
-                        # Default to black if color index is out of range
-                        r, g, b = 0, 0, 0
-                
+                        hex_color = ROWSTATE_COLORS[color_idx]
+                        r, g, b = hex_to_rgb(hex_color)
                 row_states.append(RowState(marker=marker, color=(r, g, b)))
-            
             return pd.Series(row_states)
-        
-        # Character data
-        if dt1 in [0x02, 0x09] and dt2 in [0x01, 0x02]:
-            # Constant width strings
-            if ([dt3, dt4] == [0x00, 0x00] and dt5 > 0) or (0x01 <= dt3 <= 0x07 and dt4 == 0x00):
+
+        elif dt1 in [0x02, 0x09] and dt2 in [0x01, 0x02]: # Character data
+            if ([dt3, dt4] == [0x00, 0x00] and dt5 > 0) or \
+               (0x01 <= dt3 <= 0x07 and dt4 == 0x00): # Constant width
+                if not is_compressed:
+                    file.seek(start_pos_after_dt)
+                    uncompressed_data_block_bytes = file.read(col_end - start_pos_after_dt)
+                    data_payload_source = io.BytesIO(uncompressed_data_block_bytes)
+
+                if data_payload_source is None:
+                    raise ValueError("data_payload_source not initialized for const char type")
+
                 width = dt5
                 strings = []
-                
-                # For compressed data, strings are at the end
-                if is_compressed:
-                    buffer.seek(-width * info.nrows, 2)  # From end
-                
-                # Read all string data
-                string_data = buffer.read(width * info.nrows)
-                
-                # Extract each string
+                data_size = width * info.nrows
+                data_payload_source.seek(-data_size, 2)
+                all_string_data = data_payload_source.read(data_size)
+                if len(all_string_data) < data_size:
+                    raise EOFError(f"Not enough data for const char column {column_name}")
+
                 for i in range(info.nrows):
                     start = i * width
-                    s = string_data[start:start + width].rstrip(b'\0').decode('utf-8', errors='replace')
+                    s_bytes = all_string_data[start : start + width]
+                    s = s_bytes.rstrip(b'\x00').decode('utf-8', errors='replace')
                     strings.append(s)
-                
                 return pd.Series(strings)
-            
-            # Variable width strings
-            if [dt3, dt4, dt5] == [0x00, 0x00, 0x00]:
-                if dt1 == 0x09:  # Compressed
-                    # In JMP file format, compressed variable width strings have:
-                    # - Width bytes (1 byte)
-                    # - Some header data
-                    # - Array of lengths (depends on width_bytes)
-                    # - String data
-                    
-                    # Navigate through the compressed data structure
-                    if is_compressed:
-                        # First byte after some header gives width of length bytes
-                        buffer.seek(9)  # Skip to width_bytes
-                        width_bytes = buffer.read(1)[0]
-                        buffer.seek(13)  # Skip to string length data
-                        
-                        if width_bytes == 1:
-                            # Read Int8 lengths
-                            lengths_data = buffer.read(info.nrows)
-                            lengths = np.frombuffer(lengths_data, dtype=np.int8)
-                            string_data = buffer.read()  # Rest of the buffer is string data
-                        elif width_bytes == 2:
-                            # Read Int16 lengths
-                            lengths_data = buffer.read(info.nrows * 2)
-                            lengths = np.frombuffer(lengths_data, dtype=np.int16)
-                            string_data = buffer.read()  # Rest of the buffer is string data
-                        else:
-                            raise ValueError(f"Unknown width_bytes {width_bytes} in column {column_name}")
+
+            elif [dt3, dt4, dt5] == [0x00, 0x00, 0x00]: # Variable width
+                strings = []
+                if is_compressed:
+                    if data_payload_source is None:
+                         raise ValueError("data_payload_source not initialized for compressed var char")
+                    data_payload_source.seek(9)
+                    width_bytes_val = data_payload_source.read(1)[0]
+                    lengths_offset_in_payload = 13
+                    data_payload_source.seek(lengths_offset_in_payload)
+
+                    len_dtype = None
+                    bytes_for_lengths = 0
+                    if width_bytes_val == 1:
+                        len_dtype, bytes_for_lengths = np.int8, info.nrows
+                    elif width_bytes_val == 2:
+                        len_dtype, bytes_for_lengths = np.int16, 2 * info.nrows
+                    elif width_bytes_val == 4:
+                        len_dtype, bytes_for_lengths = np.int32, 4 * info.nrows
                     else:
-                        # Uncompressed case needs special handling
-                        # This is a complex format with offsets, need to implement based on file structure
-                        raise NotImplementedError("Uncompressed variable width strings not yet implemented")
-                    
-                    # Extract strings based on lengths
-                    strings = []
-                    pos = 0
+                        raise ValueError(f"Unknown width_bytes_val {width_bytes_val} for compressed var char")
+
+                    lengths_raw = data_payload_source.read(bytes_for_lengths)
+                    lengths = np.frombuffer(lengths_raw, dtype=len_dtype)
+                    string_data_block = data_payload_source.read()
+                    current_offset_in_strings = 0
                     for length in lengths:
-                        if pos + length > len(string_data):
-                            # Handle truncated data
-                            s = string_data[pos:].decode('utf-8', errors='replace')
-                            strings.append(s)
-                            break
-                            
-                        s = string_data[pos:pos + length].decode('utf-8', errors='replace')
-                        strings.append(s)
-                        pos += length
-                    
-                    # If we got fewer strings than rows, pad with empty strings
-                    while len(strings) < info.nrows:
-                        strings.append('')
-                    
+                        s_bytes = string_data_block[current_offset_in_strings : current_offset_in_strings + length]
+                        strings.append(s_bytes.decode('utf-8', errors='replace'))
+                        current_offset_in_strings += length
                     return pd.Series(strings)
-    
-        # Formula column (usually stored as string)
-        if dt1 == 0x08:
-            return pd.Series([''] * info.nrows)  # Placeholder
-    
+                else: # Uncompressed variable width
+                    file.seek(start_pos_after_dt)
+                    _ = file.read(6)
+                    n1 = struct.unpack('<q', file.read(8))[0]
+                    _ = file.read(n1)
+                    _ = file.read(2)
+                    n2 = struct.unpack('<I', file.read(4))[0]
+                    _ = file.read(n2 + 8)
+                    width_bytes_val = struct.unpack('B', file.read(1))[0]
+                    _ = file.read(4) # Skip max_width
+
+                    len_dtype = None
+                    itemsize_for_len = 0
+                    if width_bytes_val == 1:
+                        len_dtype, itemsize_for_len = np.int8, 1
+                    elif width_bytes_val == 2:
+                        len_dtype, itemsize_for_len = np.int16, 2
+                    elif width_bytes_val == 4:
+                        len_dtype, itemsize_for_len = np.int32, 4
+                    else:
+                        raise ValueError(f"Unknown width_bytes_val {width_bytes_val} for uncompressed var char")
+
+                    lengths_raw = file.read(itemsize_for_len * info.nrows)
+                    lengths = np.frombuffer(lengths_raw, dtype=len_dtype)
+                    sum_lengths = np.sum(lengths)
+                    if sum_lengths < 0:
+                        sum_lengths = 0
+
+                    file.seek(col_end - sum_lengths)
+                    all_string_data_bytes = file.read(sum_lengths)
+                    current_offset = 0
+                    for length in lengths:
+                        s_bytes = all_string_data_bytes[current_offset : current_offset + length]
+                        strings.append(s_bytes.decode('utf-8', errors='replace'))
+                        current_offset += length
+                    return pd.Series(strings)
+        
+    except struct.error as e:
+        print(f"Struct unpacking error in column '{column_name}' (idx={column_idx}): {str(e)}. File position: {file.tell() if not file.closed else 'closed'}")
+    except EOFError as e:
+        print(f"EOFError in column '{column_name}' (idx={column_idx}): {str(e)}")
     except Exception as e:
-        # Log error but don't crash
-        print(f"Error parsing column '{column_name}' (idx={column_idx}): {str(e)}")
-    
-    # If we get here, we don't know how to handle this column type
-    print(f"Unknown data type combination: dt=({dt1:02x},{dt2:02x},{dt3:02x},{dt4:02x},{dt5:02x},{dt6:02x}) "
+        print(f"Generic error parsing column '{column_name}' (idx={column_idx}), dt=({dt1:02x},{dt2:02x},{dt3:02x},{dt4:02x},{dt5:02x},{dt6:02x}): {str(e)}")
+
+    print(f"Unknown or unhandled data type combination: dt=({dt1:02x},{dt2:02x},{dt3:02x},{dt4:02x},{dt5:02x},{dt6:02x}) "
           f"for column {column_name} (idx={column_idx})")
-    return pd.Series([float('nan')] * info.nrows)
+    return pd.Series([np.nan] * info.nrows)

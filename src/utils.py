@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from typing import TypeVar, BinaryIO
-import mmap
 from .constants import JMP_STARTDATE, MAGIC_JMP
 
 T = TypeVar('T')
@@ -62,25 +61,16 @@ def read_reals(file: BinaryIO, dtype: np.dtype, count: int = 1) -> np.ndarray:
     """
     width = np.dtype(dtype).itemsize
     
-    # Check if we're aligned properly for memory mapping
-    if file.tell() % width == 0:
-        # Create a memory-mapped array
-        try:
-            mm = mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ)
-            result = np.ndarray(
-                shape=(count,), 
-                dtype=dtype, 
-                buffer=mm, 
-                offset=file.tell()
-            )
-            file.seek(file.tell() + width * count)
-            return np.copy(result)  # Copy to avoid issues with the mmap later
-        except (ValueError, TypeError, OSError):
-            # Fall back to fromfile if memory mapping fails
-            pass
-    
-    # Read directly
+    # Read directly using file.read() and then convert using np.frombuffer()
     data = file.read(width * count)
+    
+    # Check if the expected number of bytes was read
+    if len(data) < width * count:
+        raise EOFError(
+            f"Attempted to read {width * count} bytes for {count} element(s) of type {dtype}, "
+            f"but only received {len(data)} bytes. End of file reached prematurely."
+        )
+        
     return np.frombuffer(data, dtype=dtype)
 
 

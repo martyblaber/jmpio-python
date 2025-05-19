@@ -29,14 +29,14 @@ def read_metadata(file: BinaryIO) -> JMPInfo:
     """
     # Seek to the number of rows offset
     file.seek(OFFSET_NROWS)
-    
+    print("post seek", file.tell())
     # Read number of rows and columns
     nrows = struct.unpack('<q', file.read(8))[0]  # Int64, little-endian
     ncols = struct.unpack('<i', file.read(4))[0]  # Int32, little-endian
-    
+    print("pre foo", file.tell())
     # Read some unknown values 
     foo1 = read_reals(file, np.int16, 5)
-    
+    print("post foo1", file.tell())
     # Read character set
     charset = read_string(file, 4).rstrip('\0')
     

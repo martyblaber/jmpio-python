@@ -2,7 +2,6 @@
 Constants used for reading and writing JMP files
 """
 from datetime import datetime
-import numpy as np
 
 # 18 first bytes of a .jmp file
 MAGIC_JMP = bytes([0xff, 0xff, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 

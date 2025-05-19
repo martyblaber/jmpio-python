@@ -5,7 +5,6 @@ Simple example demonstrating how to create a JMP file from Python data
 import os
 import sys
 import pandas as pd
-import numpy as np
 from datetime import datetime, date, timedelta
 
 # Add package to path
