@@ -4,12 +4,17 @@ A Python package for reading and writing SAS JMP files.
 
 ## Description
 
-`jmpio` is a Python package that provides functionality to read and write binary JMP files from SAS JMP statistical software. It's designed to be compatible with Python 3.10+ and uses pandas DataFrames for data representation.
+`jmpio` is a mostly-faithful Python port of the Julia package [JMPReader.jl](https://github.com/jaakkor2/JMPReader.jl) by [@jaakkor2](https://github.com/jaakkor2). It aims to be able to read and write binary JMP files from SAS JMP statistical software. There's no way this package would exist without @jaakor2's efforts.
+
+[!WARNING]  
+`jmpio` cannot actually write a valid jmp file - it's a work in progress.
+`jmpio` is not particularly efficient and uses pandas DataFrames internally. 
 
 ## Features
 
 - Read JMP files into pandas DataFrames
-- Write pandas DataFrames to JMP files
+- Write pandas DataFrames to JMP files (eventually)
+  - Embed Scripts in those files for plotting data.
 - Support for all JMP data types:
   - Numeric (Float64, Int8, Int16, Int32)
   - Character (fixed width and variable width strings)
