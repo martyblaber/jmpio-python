@@ -6,9 +6,9 @@ A Python package for reading and writing SAS JMP files.
 
 `jmpio` is a mostly-faithful Python port of the Julia package [JMPReader.jl](https://github.com/jaakkor2/JMPReader.jl) by [@jaakkor2](https://github.com/jaakkor2). It aims to be able to read and write binary JMP files from SAS JMP statistical software. There's no way this package would exist without @jaakor2's efforts.
 
-[!WARNING]  
-`jmpio` cannot actually write a valid jmp file - it's a work in progress.
-`jmpio` is not particularly efficient and uses pandas DataFrames internally. 
+> [!WARNING]  
+> `jmpio` cannot actually write a valid jmp file - it's a work in progress.
+> `jmpio` is not particularly efficient and uses pandas DataFrames internally. 
 
 ## Features
 
@@ -125,4 +125,5 @@ MIT
 
 This package is a Python port of the Julia package [JMPReader.jl](https://github.com/jaakkor2/JMPReader.jl).
 JMP is a registered trademark of SAS Institute Inc. This project is not affiliated with, sponsored by, or endorsed by SAS Institute Inc.
+
 
